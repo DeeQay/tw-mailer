@@ -29,7 +29,7 @@ Die Anwendung verwendet ein eigenes zeilenorientiertes Protokoll:
 
 ## Verwendete Technologien
 
-- **Programmiersprache**: C (C11 Standard)
+- **Programmiersprache**: C 
 - **Netzwerk-Programmierung**: POSIX Sockets API
   - `socket()` - Erstellt Kommunikations-Endpunkte
   - `bind()` - Bindet Socket an Adresse
@@ -40,66 +40,6 @@ Die Anwendung verwendet ein eigenes zeilenorientiertes Protokoll:
 - **File I/O**: Standard C-Dateioperationen (`fopen`, `fgets`, `fprintf`, etc.)
 - **Verzeichnis-Management**: POSIX APIs (`mkdir`, `stat`, `unlink`)
 - **Compiler**: GCC mit Warning-Flags für Code-Qualität
-
-## Entwicklungsstrategie
-
-### Phase 1: Protokoll-Design
-- Definition der Command-Struktur und Nachrichtenformat
-- Festlegung der Validierungsregeln (Username: max 8 Zeichen, alphanumerisch; Betreff: max 80 Zeichen)
-
-### Phase 2: Server-Implementierung
-1. Socket-Erstellung und Binding
-2. Verbindungshandling (iteratives Modell)
-3. Command-Parsing mit `readline()`-Funktion
-4. Implementierung der Command-Handler:
-   - `SEND`: Erstellt User-Inbox, speichert Nachricht in Datei
-   - `LIST`: Liest Inbox-Verzeichnis, extrahiert Betreffe
-   - `READ`: Ruft vollständige Nachricht ab und sendet sie
-   - `DEL`: Entfernt Nachrichtendatei
-   - `QUIT`: Schließt Verbindung
-5. Fehlerbehandlung und Validierung
-
-### Phase 3: Client-Implementierung
-1. Socket-Erstellung und Verbindung
-2. Interaktives Menü-System
-3. Benutzer-Input-Handling für jeden Command
-4. Protokoll-konforme Nachrichtenformatierung
-5. Response-Parsing und Anzeige
-
-### Phase 4: Testing und Verfeinerung
-1. Memory-Leak-Testing (valgrind)
-2. Input-Validierungs-Tests
-3. Fehlerfall-Handling
-4. Multi-Message-Testing
-
-## Notwendige Anpassungen
-
-Während der Entwicklung wurden folgende Anpassungen vorgenommen:
-
-1. **Buffer-Management**: Sorgfältiges Buffer-Size-Management zur Verhinderung von Overflows
-   - Verwendung von `strncpy()` und größenbegrenzten `fgets()`-Aufrufen
-   - Bounds-Checking für alle Benutzereingaben
-
-2. **File-Storage-Strategie**: Eine-Datei-pro-Nachricht-Ansatz gewählt
-   - Einfachere Implementierung
-   - Einfacheres Löschen von Nachrichten
-   - Bessere Fehlertoleranz (beschädigte Datei betrifft nur eine Nachricht)
-
-3. **Nachrichten-Nummerierung**: Sequenzielle Integer-Benennung für Nachrichtendateien
-   - Einfach zu implementieren
-   - Leicht nächste verfügbare Nummer zu finden
-   - Direkte Zuordnung von LIST-Output zu READ/DEL-Commands
-
-4. **Fehlerbehandlung**: Umfassendes Error-Checking
-   - Socket-Operations-Fehler
-   - File-I/O-Fehler
-   - Verzeichnis-Erstellungs-Fehler
-   - Input-Validierungs-Fehler
-
-5. **Username-Validierung**: Strikte Validierung von Usernames
-   - Nur Kleinbuchstaben (a-z) und Ziffern (0-9)
-   - Maximum 8 Zeichen
-   - Verhindert Directory-Traversal-Angriffe
 
 ## Projekt bauen
 
