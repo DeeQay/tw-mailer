@@ -54,7 +54,6 @@ void handle_send(int client_socket, const Session *session) {
         return;
     }
     
-    // ========== KRITISCHE SEKTION BEGIN ==========
     // Erwirbt Lock auf Receiver-Inbox um Race Conditions zu vermeiden
     // wenn mehrere Prozesse gleichzeitig in dieselbe Inbox schreiben
     int lock_fd = acquire_user_lock(receiver);
@@ -129,7 +128,6 @@ void handle_send(int client_socket, const Session *session) {
     
     fclose(fp);
     release_user_lock(lock_fd);
-    // ========== KRITISCHE SEKTION END ==========
     
     write(client_socket, "OK\n", 3); // Erfolgreich
 }
@@ -242,7 +240,6 @@ void handle_del(int client_socket, const Session *session) {
         return;
     }
     
-    // ========== KRITISCHE SEKTION BEGIN ==========
     // Erwirbt Lock um Race Conditions mit SEND-Operationen zu vermeiden
     int lock_fd = acquire_user_lock(username);
     if (lock_fd == -1) {
@@ -261,7 +258,6 @@ void handle_del(int client_socket, const Session *session) {
     }
     
     release_user_lock(lock_fd);
-    // ========== KRITISCHE SEKTION END ==========
     
     write(client_socket, "OK\n", 3); // Erfolgreich gelöscht
 }

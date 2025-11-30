@@ -166,8 +166,8 @@ int main(int argc, char *argv[]) {
     // Registriere Signal Handler für SIGCHLD um Zombie-Prozesse zu vermeiden
     struct sigaction sa;
     sa.sa_handler = sigchld_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigemptyset(&sa.sa_mask); 
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; 
     if (sigaction(SIGCHLD, &sa, NULL) == -1) {
         perror("sigaction");
         return EXIT_FAILURE;
@@ -244,8 +244,8 @@ int main(int argc, char *argv[]) {
             close(client_socket);
             continue;
         } else if (pid == 0) {
-            // ========== KINDPROZESS ==========
-            // Kindprozess braucht den Server-Socket nicht
+            //  CHILD PROCESS
+            // braucht den Server-Socket nicht
             close(server_socket);
             
             // Behandle Client-Anfragen (mit Client-IP für Blacklist)
@@ -258,8 +258,8 @@ int main(int argc, char *argv[]) {
             // Kindprozess beenden
             exit(EXIT_SUCCESS);
         } else {
-            // ========== ELTERNPROZESS ==========
-            // Elternprozess braucht den Client-Socket nicht
+            // PARENT PROCESS
+            // braucht den Client-Socket nicht
             // Der Kindprozess hat eine Kopie davon
             close(client_socket);
             

@@ -20,6 +20,7 @@ int acquire_blacklist_lock() {
     }
     
     if (flock(lock_fd, LOCK_EX) == -1) {
+        // error
         perror("flock blacklist");
         close(lock_fd);
         return -1;
@@ -30,6 +31,7 @@ int acquire_blacklist_lock() {
 
 // Gibt das Blacklist-Lock frei
 void release_blacklist_lock(int lock_fd) {
+    // unlock und close
     if (lock_fd != -1) {
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
@@ -37,7 +39,7 @@ void release_blacklist_lock(int lock_fd) {
 }
 
 // Lädt Blacklist-Eintrag für eine IP
-// Rückgabe: 1 wenn gefunden, 0 wenn nicht gefunden
+// return: 1 wenn gefunden, 0 wenn nicht gefunden
 int load_blacklist_entry(const char *ip, BlacklistEntry *entry) {
     char blacklist_path[MAX_PATH];
     snprintf(blacklist_path, sizeof(blacklist_path), "%s/%s", mail_spool_dir, BLACKLIST_FILE);

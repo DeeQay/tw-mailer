@@ -13,20 +13,20 @@
 
 // Zeigt Menu an
 void display_menu() {
-    printf("\n===== TW-Mailer Pro Client =====\n");
+    printf("\n--- TW-Mailer Pro Client ---\n");
     if (is_logged_in) {
         printf("Status: LOGGED IN\n");
     } else {
         printf("Status: NOT LOGGED IN\n");
     }
-    printf("--------------------------------\n");
+    printf("------------------------------------\n");
     printf("1. LOGIN - Authenticate with LDAP\n");
     printf("2. SEND  - Send a message\n");
     printf("3. LIST  - List your messages\n");
     printf("4. READ  - Read a specific message\n");
     printf("5. DEL   - Delete a message\n");
     printf("6. QUIT  - Exit the client\n");
-    printf("================================\n");
+    printf("------------------------------------\n");
     printf("Choose an option: ");
 }
 

@@ -13,7 +13,7 @@ void login(int socket_fd) {
     char password[MAX_PASSWORD + 1];
     char response[32];
     
-    printf("\n LOGIN \n");
+    printf("\n--- LOGIN ---\n");
     
     if (is_logged_in) {
         printf("Already logged in!\n");
