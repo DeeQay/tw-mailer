@@ -1,5 +1,5 @@
 // Usage: ./twmailer-client <ip> <port>
-// Pro Version: LOGIN required, automatic username for SEND/LIST/READ/DEL
+// Pro Version: LOGIN erforderlich, automatischer Username für SEND/LIST/READ/DEL
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,7 +108,7 @@ int read_password(char *buffer, int size) {
 void login(int socket_fd) {
     char username[MAX_LDAP_USERNAME + 1];
     char password[MAX_PASSWORD + 1];
-    char response[16];
+    char response[32];
     
     printf("\n=== LOGIN ===\n");
     
@@ -161,6 +161,11 @@ void login(int socket_fd) {
         if (strcmp(response, "OK") == 0) {
             printf("Login successful!\n");
             is_logged_in = 1;
+        } else if (strncmp(response, "BLOCKED ", 8) == 0) {
+            int seconds = atoi(response + 8);
+            printf("Your IP is blocked! Try again in %d seconds.\n", seconds);
+        } else if (strcmp(response, "ERR LDAP") == 0) {
+            printf("LDAP server unreachable! Please check your VPN connection.\n");
         } else {
             printf("Login failed! Check your credentials.\n");
             printf("(After 3 failed attempts, your IP will be blocked for 1 minute)\n");

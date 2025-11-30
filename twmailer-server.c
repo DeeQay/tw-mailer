@@ -1,6 +1,6 @@
 // Usage: ./twmailer-server <port> <mail-spool-directory>
-// Concurrent server using fork()
-// Pro Version: LOGIN with LDAP, Session management, Blacklist
+// Concurrent Server mit fork()
+// Pro Version: LOGIN mit LDAP, Session-Management, Blacklist
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/file.h>
+#include <sys/time.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -28,7 +29,7 @@
 #define MAX_PATH 1024  // Größerer Buffer für Dateipfade
 
 // LDAP Configuration
-#define LDAP_HOST "ldap.technikum.wien.at"
+#define LDAP_HOST "ldap.technikum-wien.at"
 #define LDAP_PORT 389
 #define LDAP_SEARCH_BASE "dc=technikum-wien,dc=at"
 
@@ -55,7 +56,7 @@ typedef struct {
 
 // Signal Handler für SIGCHLD - verhindert Zombie-Prozesse
 void sigchld_handler(int sig) {
-    (void)sig; // Unused parameter
+    (void)sig; // braucht man 
     // Reape alle beendeten Kindprozesse
     while (waitpid(-1, NULL, WNOHANG) > 0);
 }
@@ -206,23 +207,23 @@ void clear_blacklist_entry(const char *ip) {
 }
 
 // Prüft ob IP aktuell gesperrt ist
-// Rückgabe: 1 wenn gesperrt, 0 wenn nicht
-int is_ip_blacklisted(const char *ip) {
+// Rückgabe: Verbleibende Sekunden wenn gesperrt, 0 wenn nicht gesperrt
+int get_blacklist_remaining(const char *ip) {
     int lock_fd = acquire_blacklist_lock();
     if (lock_fd == -1) return 0;
     
     BlacklistEntry entry;
-    int result = 0;
+    int remaining = 0;
     
     if (load_blacklist_entry(ip, &entry)) {
         time_t now = time(NULL);
         if (entry.block_until > now) {
-            result = 1; // Noch gesperrt
+            remaining = (int)(entry.block_until - now);
         }
     }
     
     release_blacklist_lock(lock_fd);
-    return result;
+    return remaining;
 }
 
 // Registriert fehlgeschlagenen Login-Versuch
@@ -268,7 +269,7 @@ void register_successful_login(const char *ip) {
 }
 
 // Authentifiziert Benutzer gegen LDAP-Server
-// Rückgabe: 1 bei Erfolg, 0 bei Fehler
+// Rückgabe: 1 bei Erfolg, 0 bei Auth-Fehler, -1 bei Server nicht erreichbar
 int ldap_authenticate(const char *username, const char *password) {
     LDAP *ld = NULL;
     int result = 0;
@@ -282,7 +283,7 @@ int ldap_authenticate(const char *username, const char *password) {
     int rc = ldap_initialize(&ld, ldap_uri);
     if (rc != LDAP_SUCCESS) {
         fprintf(stderr, "ldap_initialize failed: %s\n", ldap_err2string(rc));
-        return 0;
+        return -1;
     }
     
     // Setze LDAP Version 3
@@ -290,7 +291,18 @@ int ldap_authenticate(const char *username, const char *password) {
     if (rc != LDAP_OPT_SUCCESS) {
         fprintf(stderr, "ldap_set_option failed: %s\n", ldap_err2string(rc));
         ldap_unbind_ext_s(ld, NULL, NULL);
-        return 0;
+        return -1;
+    }
+    
+    // Setze Netzwerk-Timeout (5 Sekunden) um bei fehlender VPN-Verbindung nicht ewig zu hängen
+    struct timeval network_timeout;
+    network_timeout.tv_sec = 5;
+    network_timeout.tv_usec = 0;
+    rc = ldap_set_option(ld, LDAP_OPT_NETWORK_TIMEOUT, &network_timeout);
+    if (rc != LDAP_OPT_SUCCESS) {
+        fprintf(stderr, "ldap_set_option (timeout) failed: %s\n", ldap_err2string(rc));
+        ldap_unbind_ext_s(ld, NULL, NULL);
+        return -1;
     }
     
     // Erstelle DN für Benutzer
@@ -309,6 +321,9 @@ int ldap_authenticate(const char *username, const char *password) {
     if (rc == LDAP_SUCCESS) {
         result = 1; // Authentifizierung erfolgreich
         printf("LDAP authentication successful for user: %s\n", username);
+    } else if (rc == LDAP_SERVER_DOWN || rc == LDAP_TIMEOUT || rc == LDAP_CONNECT_ERROR) {
+        fprintf(stderr, "LDAP server unreachable: %s\n", ldap_err2string(rc));
+        result = -1;
     } else {
         fprintf(stderr, "LDAP authentication failed for user %s: %s\n", 
                 username, ldap_err2string(rc));
@@ -457,8 +472,8 @@ void handle_send(int client_socket, const Session *session) {
     }
     
     // ========== KRITISCHE SEKTION BEGIN ==========
-    // Acquire lock on receiver's inbox to prevent race conditions
-    // when multiple processes try to write to the same inbox
+    // Erwirbt Lock auf Receiver-Inbox um Race Conditions zu vermeiden
+    // wenn mehrere Prozesse gleichzeitig in dieselbe Inbox schreiben
     int lock_fd = acquire_user_lock(receiver);
     if (lock_fd == -1) {
         // Konsumiere verbleibende Message-Zeilen bis ".\n"
@@ -645,7 +660,7 @@ void handle_del(int client_socket, const Session *session) {
     }
     
     // ========== KRITISCHE SEKTION BEGIN ==========
-    // Acquire lock to prevent race conditions with SEND operations
+    // Erwirbt Lock um Race Conditions mit SEND-Operationen zu vermeiden
     int lock_fd = acquire_user_lock(username);
     if (lock_fd == -1) {
         write(client_socket, "ERR\n", 4);
@@ -688,9 +703,12 @@ void handle_login(int client_socket, Session *session, const char *client_ip) {
     password[strcspn(password, "\n")] = 0;
     
     // Prüfe ob IP gesperrt ist
-    if (is_ip_blacklisted(client_ip)) {
-        printf("Login attempt from blacklisted IP: %s\n", client_ip);
-        write(client_socket, "ERR\n", 4);
+    int blocked_seconds = get_blacklist_remaining(client_ip);
+    if (blocked_seconds > 0) {
+        char blocked_msg[32];
+        printf("Login attempt from blacklisted IP: %s (%d seconds remaining)\n", client_ip, blocked_seconds);
+        snprintf(blocked_msg, sizeof(blocked_msg), "BLOCKED %d\n", blocked_seconds);
+        write(client_socket, blocked_msg, strlen(blocked_msg));
         return;
     }
     
@@ -702,7 +720,8 @@ void handle_login(int client_socket, Session *session, const char *client_ip) {
     }
     
     // Authentifiziere gegen LDAP
-    if (ldap_authenticate(username, password)) {
+    int auth_result = ldap_authenticate(username, password);
+    if (auth_result == 1) {
         // Erfolgreicher Login
         session->authenticated = 1;
         strncpy(session->username, username, MAX_LDAP_USERNAME - 1);
@@ -713,6 +732,10 @@ void handle_login(int client_socket, Session *session, const char *client_ip) {
         
         printf("User %s logged in successfully from %s\n", username, client_ip);
         write(client_socket, "OK\n", 3);
+    } else if (auth_result == -1) {
+        // LDAP Server nicht erreichbar - kein Blacklist-Eintrag
+        printf("LDAP server unreachable for user %s from %s\n", username, client_ip);
+        write(client_socket, "ERR LDAP\n", 9);
     } else {
         // Fehlgeschlagener Login
         int remaining = register_failed_login(client_ip);
