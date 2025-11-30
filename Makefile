@@ -1,9 +1,11 @@
-# Makefile for TW-Mailer Project
+# Makefile for TW-Mailer Pro Project
 # Compiles both client and server applications
+# Requires: libldap2-dev package (sudo apt install libldap2-dev)
 
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -pedantic -g
-LDFLAGS = 
+LDFLAGS_SERVER = -lldap -llber
+LDFLAGS_CLIENT = 
 
 # Source files
 SERVER_SRC = twmailer-server.c
@@ -19,10 +21,10 @@ CLIENT_BIN = twmailer-client
 all: $(SERVER_BIN) $(CLIENT_BIN)
 
 $(SERVER_BIN): $(SERVER_SRC)
-	$(CC) $(CFLAGS) -o $(SERVER_BIN) $(SERVER_SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $(SERVER_BIN) $(SERVER_SRC) $(LDFLAGS_SERVER)
 
 $(CLIENT_BIN): $(CLIENT_SRC)
-	$(CC) $(CFLAGS) -o $(CLIENT_BIN) $(CLIENT_SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $(CLIENT_BIN) $(CLIENT_SRC) $(LDFLAGS_CLIENT)
 
 clean:
 	rm -f $(SERVER_BIN) $(CLIENT_BIN)

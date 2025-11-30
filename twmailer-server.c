@@ -1,4 +1,8 @@
 // Usage: ./twmailer-server <port> <mail-spool-directory>
+// Concurrent server using fork()
+// Pro Version: LOGIN with LDAP, Session management, Blacklist
+
+#define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,13 +12,314 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <sys/file.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <time.h>
+#include <ldap.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_USERNAME 8
 #define MAX_SUBJECT 80
+#define MAX_LDAP_USERNAME 256
+#define MAX_PASSWORD 256
+#define MAX_PATH 1024  // Größerer Buffer für Dateipfade
+
+// LDAP Configuration
+#define LDAP_HOST "ldap.technikum.wien.at"
+#define LDAP_PORT 389
+#define LDAP_SEARCH_BASE "dc=technikum-wien,dc=at"
+
+// Blacklist Configuration
+#define MAX_LOGIN_ATTEMPTS 3
+#define BLACKLIST_DURATION 60  // Sekunden (1 Minute)
+#define BLACKLIST_FILE "blacklist.dat"
 
 // Globale Variable für das Mail-Spool-Verzeichnis
 char mail_spool_dir[256];
+
+// Session-Struktur für authentifizierten Benutzer
+typedef struct {
+    int authenticated;           // 1 wenn eingeloggt, 0 sonst
+    char username[MAX_LDAP_USERNAME]; // LDAP Username (z.B. if23b001)
+} Session;
+
+// Blacklist-Eintrag Struktur
+typedef struct {
+    char ip[INET_ADDRSTRLEN];   // IP-Adresse
+    int attempts;                // Anzahl fehlgeschlagener Versuche
+    time_t block_until;          // Zeitpunkt bis wann gesperrt (0 = nicht gesperrt)
+} BlacklistEntry;
+
+// Signal Handler für SIGCHLD - verhindert Zombie-Prozesse
+void sigchld_handler(int sig) {
+    (void)sig; // Unused parameter
+    // Reape alle beendeten Kindprozesse
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+// Erwirbt ein Lock auf die User-Inbox (für Synchronisation zwischen Prozessen)
+// Rückgabe: Lock file descriptor, -1 bei Fehler
+int acquire_user_lock(const char *username) {
+    char lock_file[MAX_PATH];
+    snprintf(lock_file, sizeof(lock_file), "%s/.%s.lock", mail_spool_dir, username);
+    
+    int lock_fd = open(lock_file, O_CREAT | O_RDWR, 0600);
+    if (lock_fd == -1) {
+        perror("open lock file");
+        return -1;
+    }
+    
+    // Exklusives Lock (blockierend)
+    if (flock(lock_fd, LOCK_EX) == -1) {
+        perror("flock");
+        close(lock_fd);
+        return -1;
+    }
+    
+    return lock_fd;
+}
+
+// Gibt das Lock auf die User-Inbox frei
+void release_user_lock(int lock_fd) {
+    if (lock_fd != -1) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+    }
+}
+
+// Erwirbt ein Lock auf die Blacklist-Datei
+int acquire_blacklist_lock() {
+    char lock_file[MAX_PATH];
+    snprintf(lock_file, sizeof(lock_file), "%s/.blacklist.lock", mail_spool_dir);
+    
+    int lock_fd = open(lock_file, O_CREAT | O_RDWR, 0600);
+    if (lock_fd == -1) {
+        perror("open blacklist lock file");
+        return -1;
+    }
+    
+    if (flock(lock_fd, LOCK_EX) == -1) {
+        perror("flock blacklist");
+        close(lock_fd);
+        return -1;
+    }
+    
+    return lock_fd;
+}
+
+// Gibt das Blacklist-Lock frei
+void release_blacklist_lock(int lock_fd) {
+    if (lock_fd != -1) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+    }
+}
+
+// Lädt Blacklist-Eintrag für eine IP
+// Rückgabe: 1 wenn gefunden, 0 wenn nicht gefunden
+int load_blacklist_entry(const char *ip, BlacklistEntry *entry) {
+    char blacklist_path[MAX_PATH];
+    snprintf(blacklist_path, sizeof(blacklist_path), "%s/%s", mail_spool_dir, BLACKLIST_FILE);
+    
+    FILE *fp = fopen(blacklist_path, "r");
+    if (fp == NULL) {
+        return 0; // Datei existiert nicht
+    }
+    
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char stored_ip[INET_ADDRSTRLEN];
+        int attempts;
+        long block_until;
+        
+        if (sscanf(line, "%15s %d %ld", stored_ip, &attempts, &block_until) == 3) {
+            if (strcmp(stored_ip, ip) == 0) {
+                strncpy(entry->ip, stored_ip, INET_ADDRSTRLEN - 1);
+                entry->ip[INET_ADDRSTRLEN - 1] = '\0';
+                entry->attempts = attempts;
+                entry->block_until = (time_t)block_until;
+                fclose(fp);
+                return 1;
+            }
+        }
+    }
+    
+    fclose(fp);
+    return 0;
+}
+
+// Speichert/Aktualisiert Blacklist-Eintrag für eine IP
+void save_blacklist_entry(const char *ip, int attempts, time_t block_until) {
+    char blacklist_path[MAX_PATH];
+    char temp_path[MAX_PATH];
+    snprintf(blacklist_path, sizeof(blacklist_path), "%s/%s", mail_spool_dir, BLACKLIST_FILE);
+    snprintf(temp_path, sizeof(temp_path), "%s/%s.tmp", mail_spool_dir, BLACKLIST_FILE);
+    
+    FILE *fp_in = fopen(blacklist_path, "r");
+    FILE *fp_out = fopen(temp_path, "w");
+    
+    if (fp_out == NULL) {
+        if (fp_in) fclose(fp_in);
+        return;
+    }
+    
+    int found = 0;
+    
+    if (fp_in != NULL) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp_in) != NULL) {
+            char stored_ip[INET_ADDRSTRLEN];
+            int stored_attempts;
+            long stored_block;
+            
+            if (sscanf(line, "%15s %d %ld", stored_ip, &stored_attempts, &stored_block) == 3) {
+                if (strcmp(stored_ip, ip) == 0) {
+                    // Aktualisiere diesen Eintrag
+                    fprintf(fp_out, "%s %d %ld\n", ip, attempts, (long)block_until);
+                    found = 1;
+                } else {
+                    // Kopiere unverändert
+                    fprintf(fp_out, "%s", line);
+                }
+            }
+        }
+        fclose(fp_in);
+    }
+    
+    // Wenn IP nicht gefunden, füge neuen Eintrag hinzu
+    if (!found) {
+        fprintf(fp_out, "%s %d %ld\n", ip, attempts, (long)block_until);
+    }
+    
+    fclose(fp_out);
+    
+    // Ersetze alte Datei durch neue
+    rename(temp_path, blacklist_path);
+}
+
+// Löscht Blacklist-Eintrag für eine IP (nach erfolgreichem Login)
+void clear_blacklist_entry(const char *ip) {
+    save_blacklist_entry(ip, 0, 0);
+}
+
+// Prüft ob IP aktuell gesperrt ist
+// Rückgabe: 1 wenn gesperrt, 0 wenn nicht
+int is_ip_blacklisted(const char *ip) {
+    int lock_fd = acquire_blacklist_lock();
+    if (lock_fd == -1) return 0;
+    
+    BlacklistEntry entry;
+    int result = 0;
+    
+    if (load_blacklist_entry(ip, &entry)) {
+        time_t now = time(NULL);
+        if (entry.block_until > now) {
+            result = 1; // Noch gesperrt
+        }
+    }
+    
+    release_blacklist_lock(lock_fd);
+    return result;
+}
+
+// Registriert fehlgeschlagenen Login-Versuch
+// Rückgabe: Verbleibende Versuche (0 = jetzt gesperrt)
+int register_failed_login(const char *ip) {
+    int lock_fd = acquire_blacklist_lock();
+    if (lock_fd == -1) return MAX_LOGIN_ATTEMPTS;
+    
+    BlacklistEntry entry;
+    int attempts = 1;
+    time_t block_until = 0;
+    
+    if (load_blacklist_entry(ip, &entry)) {
+        time_t now = time(NULL);
+        
+        // Wenn Sperre abgelaufen, reset Attempts
+        if (entry.block_until > 0 && entry.block_until <= now) {
+            attempts = 1;
+        } else {
+            attempts = entry.attempts + 1;
+        }
+    }
+    
+    // Bei 3 Versuchen: Sperre für 1 Minute
+    if (attempts >= MAX_LOGIN_ATTEMPTS) {
+        block_until = time(NULL) + BLACKLIST_DURATION;
+        printf("IP %s blocked for %d seconds\n", ip, BLACKLIST_DURATION);
+    }
+    
+    save_blacklist_entry(ip, attempts, block_until);
+    release_blacklist_lock(lock_fd);
+    
+    return MAX_LOGIN_ATTEMPTS - attempts;
+}
+
+// Registriert erfolgreichen Login (löscht Blacklist-Eintrag)
+void register_successful_login(const char *ip) {
+    int lock_fd = acquire_blacklist_lock();
+    if (lock_fd == -1) return;
+    
+    clear_blacklist_entry(ip);
+    release_blacklist_lock(lock_fd);
+}
+
+// Authentifiziert Benutzer gegen LDAP-Server
+// Rückgabe: 1 bei Erfolg, 0 bei Fehler
+int ldap_authenticate(const char *username, const char *password) {
+    LDAP *ld = NULL;
+    int result = 0;
+    int ldap_version = LDAP_VERSION3;
+    
+    // Erstelle LDAP URI
+    char ldap_uri[256];
+    snprintf(ldap_uri, sizeof(ldap_uri), "ldap://%s:%d", LDAP_HOST, LDAP_PORT);
+    
+    // Initialisiere LDAP-Verbindung
+    int rc = ldap_initialize(&ld, ldap_uri);
+    if (rc != LDAP_SUCCESS) {
+        fprintf(stderr, "ldap_initialize failed: %s\n", ldap_err2string(rc));
+        return 0;
+    }
+    
+    // Setze LDAP Version 3
+    rc = ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &ldap_version);
+    if (rc != LDAP_OPT_SUCCESS) {
+        fprintf(stderr, "ldap_set_option failed: %s\n", ldap_err2string(rc));
+        ldap_unbind_ext_s(ld, NULL, NULL);
+        return 0;
+    }
+    
+    // Erstelle DN für Benutzer
+    // Format: uid=<username>,ou=people,dc=technikum-wien,dc=at
+    char bind_dn[MAX_PATH];
+    snprintf(bind_dn, sizeof(bind_dn), "uid=%s,ou=people,%s", username, LDAP_SEARCH_BASE);
+    
+    // Erstelle Credentials
+    struct berval cred;
+    cred.bv_val = (char *)password;
+    cred.bv_len = strlen(password);
+    
+    // Versuche LDAP bind (Authentifizierung)
+    rc = ldap_sasl_bind_s(ld, bind_dn, LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL);
+    
+    if (rc == LDAP_SUCCESS) {
+        result = 1; // Authentifizierung erfolgreich
+        printf("LDAP authentication successful for user: %s\n", username);
+    } else {
+        fprintf(stderr, "LDAP authentication failed for user %s: %s\n", 
+                username, ldap_err2string(rc));
+        result = 0;
+    }
+    
+    // Schließe LDAP-Verbindung
+    ldap_unbind_ext_s(ld, NULL, NULL);
+    
+    return result;
+}
 
 // Liest eine Zeile vom Socket (bis \n)
 // Rückgabe: Anzahl gelesener Zeichen, -1 bei Fehler, 0 wenn Connection geschlossen
@@ -66,7 +371,7 @@ int validate_username(const char *username) {
 
 // Erstellt Inbox-Verzeichnis für User falls nicht vorhanden
 int create_user_inbox(const char *username) {
-    char inbox_path[512];
+    char inbox_path[MAX_PATH];
     snprintf(inbox_path, sizeof(inbox_path), "%s/%s", mail_spool_dir, username);
     
     struct stat st = {0};
@@ -83,7 +388,7 @@ int create_user_inbox(const char *username) {
 
 // Ermittelt die nächste freie Message-Nummer für einen User
 int get_next_message_number(const char *username) {
-    char msg_file[512];
+    char msg_file[MAX_PATH];
     int num = 1;
     
     // Suche erste freie Nummer durch Probieren
@@ -102,19 +407,14 @@ int get_next_message_number(const char *username) {
     return num; // Fallback
 }
 
-// Behandelt SEND-Command
-void handle_send(int client_socket) {
-    char sender[MAX_USERNAME + 2];
+// Behandelt SEND-Command (Pro Version: Sender kommt aus Session)
+void handle_send(int client_socket, const Session *session) {
     char receiver[MAX_USERNAME + 2];
     char subject[MAX_SUBJECT + 2];
     char line[BUFFER_SIZE];
     
-    // Lese Sender
-    if (readline(client_socket, sender, sizeof(sender)) <= 0) {
-        write(client_socket, "ERR\n", 4);
-        return;
-    }
-    sender[strcspn(sender, "\n")] = 0; // Entferne Newline
+    // Sender kommt aus der Session (LDAP Username)
+    const char *sender = session->username;
     
     // Lese Receiver
     if (readline(client_socket, receiver, sizeof(receiver)) <= 0) {
@@ -130,8 +430,8 @@ void handle_send(int client_socket) {
     }
     subject[strcspn(subject, "\n")] = 0;
     
-    // Validiere beide Usernames
-    if (!validate_username(sender) || !validate_username(receiver)) {
+    // Validiere Receiver Username
+    if (!validate_username(receiver)) {
         // Konsumiere verbleibende Message-Zeilen bis ".\n"
         while (1) {
             int len = readline(client_socket, line, sizeof(line));
@@ -156,8 +456,30 @@ void handle_send(int client_socket) {
         return;
     }
     
+    // ========== KRITISCHE SEKTION BEGIN ==========
+    // Acquire lock on receiver's inbox to prevent race conditions
+    // when multiple processes try to write to the same inbox
+    int lock_fd = acquire_user_lock(receiver);
+    if (lock_fd == -1) {
+        // Konsumiere verbleibende Message-Zeilen bis ".\n"
+        while (1) {
+            int len = readline(client_socket, line, sizeof(line));
+            if (len <= 0 || strcmp(line, ".\n") == 0) {
+                break;
+            }
+        }
+        write(client_socket, "ERR\n", 4);
+        return;
+    }
+    
     // Erstelle Inbox für Receiver falls nötig
     if (create_user_inbox(receiver) == -1) {
+        release_user_lock(lock_fd);
+        // Konsumiere Message
+        while (1) {
+            int len = readline(client_socket, line, sizeof(line));
+            if (len <= 0 || strcmp(line, ".\n") == 0) break;
+        }
         write(client_socket, "ERR\n", 4);
         return;
     }
@@ -166,12 +488,18 @@ void handle_send(int client_socket) {
     int msg_num = get_next_message_number(receiver);
     
     // Erstelle Message-Datei
-    char msg_file[512];
+    char msg_file[MAX_PATH];
     snprintf(msg_file, sizeof(msg_file), "%s/%s/%d", mail_spool_dir, receiver, msg_num);
     
     FILE *fp = fopen(msg_file, "w");
     if (fp == NULL) {
         perror("fopen");
+        release_user_lock(lock_fd);
+        // Konsumiere Message
+        while (1) {
+            int len = readline(client_socket, line, sizeof(line));
+            if (len <= 0 || strcmp(line, ".\n") == 0) break;
+        }
         write(client_socket, "ERR\n", 4);
         return;
     }
@@ -188,6 +516,7 @@ void handle_send(int client_socket) {
         if (len <= 0) {
             fclose(fp);
             unlink(msg_file); // Lösche unvollständige Message
+            release_user_lock(lock_fd);
             write(client_socket, "ERR\n", 4);
             return;
         }
@@ -201,25 +530,16 @@ void handle_send(int client_socket) {
     }
     
     fclose(fp);
+    release_user_lock(lock_fd);
+    // ========== KRITISCHE SEKTION END ==========
+    
     write(client_socket, "OK\n", 3); // Erfolgreich
 }
 
-// Behandelt LIST-Command
-void handle_list(int client_socket) {
-    char username[MAX_USERNAME + 2];
-    
-    // Lese Username
-    if (readline(client_socket, username, sizeof(username)) <= 0) {
-        write(client_socket, "0\n", 2);
-        return;
-    }
-    username[strcspn(username, "\n")] = 0;
-    
-    // Validiere Username
-    if (!validate_username(username)) {
-        write(client_socket, "0\n", 2);
-        return;
-    }
+// Behandelt LIST-Command (Pro Version: Username kommt aus Session)
+void handle_list(int client_socket, const Session *session) {
+    // Username kommt aus der Session
+    const char *username = session->username;
     
     // Zähle Messages durch Probieren der Nummern 1, 2, 3, ...
     char subjects[100][MAX_SUBJECT + 1];
@@ -227,7 +547,7 @@ void handle_list(int client_socket) {
     int num = 1;
     
     while (num <= 100 && count < 100) {
-        char msg_file[512];
+        char msg_file[MAX_PATH];
         snprintf(msg_file, sizeof(msg_file), "%s/%s/%d", mail_spool_dir, username, num);
         
         FILE *fp = fopen(msg_file, "r");
@@ -261,17 +581,12 @@ void handle_list(int client_socket) {
     }
 }
 
-// Behandelt READ-Command
-void handle_read(int client_socket) {
-    char username[MAX_USERNAME + 2];
+// Behandelt READ-Command (Pro Version: Username kommt aus Session)
+void handle_read(int client_socket, const Session *session) {
     char msg_num_str[32];
     
-    // Lese Username
-    if (readline(client_socket, username, sizeof(username)) <= 0) {
-        write(client_socket, "ERR\n", 4);
-        return;
-    }
-    username[strcspn(username, "\n")] = 0;
+    // Username kommt aus der Session
+    const char *username = session->username;
     
     // Lese Message-Nummer
     if (readline(client_socket, msg_num_str, sizeof(msg_num_str)) <= 0) {
@@ -279,12 +594,6 @@ void handle_read(int client_socket) {
         return;
     }
     msg_num_str[strcspn(msg_num_str, "\n")] = 0;
-    
-    // Validiere Username
-    if (!validate_username(username)) {
-        write(client_socket, "ERR\n", 4);
-        return;
-    }
     
     // Konvertiere Message-Nummer zu Integer
     int msg_num = atoi(msg_num_str);
@@ -294,7 +603,7 @@ void handle_read(int client_socket) {
     }
     
     // Öffne Message-Datei
-    char msg_file[512];
+    char msg_file[MAX_PATH];
     snprintf(msg_file, sizeof(msg_file), "%s/%s/%d", mail_spool_dir, username, msg_num);
     
     FILE *fp = fopen(msg_file, "r");
@@ -314,17 +623,12 @@ void handle_read(int client_socket) {
     fclose(fp);
 }
 
-// Behandelt DEL-Command
-void handle_del(int client_socket) {
-    char username[MAX_USERNAME + 2];
+// Behandelt DEL-Command (Pro Version: Username kommt aus Session)
+void handle_del(int client_socket, const Session *session) {
     char msg_num_str[32];
     
-    // Lese Username
-    if (readline(client_socket, username, sizeof(username)) <= 0) {
-        write(client_socket, "ERR\n", 4);
-        return;
-    }
-    username[strcspn(username, "\n")] = 0;
+    // Username kommt aus der Session
+    const char *username = session->username;
     
     // Lese Message-Nummer
     if (readline(client_socket, msg_num_str, sizeof(msg_num_str)) <= 0) {
@@ -333,12 +637,6 @@ void handle_del(int client_socket) {
     }
     msg_num_str[strcspn(msg_num_str, "\n")] = 0;
     
-    // Validiere Username
-    if (!validate_username(username)) {
-        write(client_socket, "ERR\n", 4);
-        return;
-    }
-    
     // Konvertiere Message-Nummer zu Integer
     int msg_num = atoi(msg_num_str);
     if (msg_num <= 0) {
@@ -346,21 +644,92 @@ void handle_del(int client_socket) {
         return;
     }
     
+    // ========== KRITISCHE SEKTION BEGIN ==========
+    // Acquire lock to prevent race conditions with SEND operations
+    int lock_fd = acquire_user_lock(username);
+    if (lock_fd == -1) {
+        write(client_socket, "ERR\n", 4);
+        return;
+    }
+    
     // Lösche Message-Datei
-    char msg_file[512];
+    char msg_file[MAX_PATH];
     snprintf(msg_file, sizeof(msg_file), "%s/%s/%d", mail_spool_dir, username, msg_num);
     
     if (unlink(msg_file) == -1) {
+        release_user_lock(lock_fd);
         write(client_socket, "ERR\n", 4); // Löschen fehlgeschlagen
         return;
     }
     
+    release_user_lock(lock_fd);
+    // ========== KRITISCHE SEKTION END ==========
+    
     write(client_socket, "OK\n", 3); // Erfolgreich gelöscht
 }
 
-// Behandelt Client-Verbindung
-void handle_client(int client_socket) {
+// Behandelt LOGIN-Command
+void handle_login(int client_socket, Session *session, const char *client_ip) {
+    char username[MAX_LDAP_USERNAME + 2];
+    char password[MAX_PASSWORD + 2];
+    
+    // Lese LDAP Username
+    if (readline(client_socket, username, sizeof(username)) <= 0) {
+        write(client_socket, "ERR\n", 4);
+        return;
+    }
+    username[strcspn(username, "\n")] = 0;
+    
+    // Lese Password
+    if (readline(client_socket, password, sizeof(password)) <= 0) {
+        write(client_socket, "ERR\n", 4);
+        return;
+    }
+    password[strcspn(password, "\n")] = 0;
+    
+    // Prüfe ob IP gesperrt ist
+    if (is_ip_blacklisted(client_ip)) {
+        printf("Login attempt from blacklisted IP: %s\n", client_ip);
+        write(client_socket, "ERR\n", 4);
+        return;
+    }
+    
+    // Prüfe ob User bereits eingeloggt ist
+    if (session->authenticated) {
+        printf("User already logged in: %s\n", session->username);
+        write(client_socket, "OK\n", 3);
+        return;
+    }
+    
+    // Authentifiziere gegen LDAP
+    if (ldap_authenticate(username, password)) {
+        // Erfolgreicher Login
+        session->authenticated = 1;
+        strncpy(session->username, username, MAX_LDAP_USERNAME - 1);
+        session->username[MAX_LDAP_USERNAME - 1] = '\0';
+        
+        // Reset Blacklist für diese IP
+        register_successful_login(client_ip);
+        
+        printf("User %s logged in successfully from %s\n", username, client_ip);
+        write(client_socket, "OK\n", 3);
+    } else {
+        // Fehlgeschlagener Login
+        int remaining = register_failed_login(client_ip);
+        printf("Login failed for user %s from %s (%d attempts remaining)\n", 
+               username, client_ip, remaining);
+        write(client_socket, "ERR\n", 4);
+    }
+}
+
+// Behandelt Client-Verbindung (Pro Version mit Session-Management)
+void handle_client(int client_socket, const char *client_ip) {
     char buffer[BUFFER_SIZE];
+    
+    // Initialisiere Session
+    Session session;
+    session.authenticated = 0;
+    session.username[0] = '\0';
     
     // Empfange Commands in einer Schleife
     while (1) {
@@ -373,18 +742,34 @@ void handle_client(int client_socket) {
         
         printf("Received command: %s\n", buffer);
         
-        // Verarbeite Command
-        if (strcmp(buffer, "SEND") == 0) {
-            handle_send(client_socket);
-        } else if (strcmp(buffer, "LIST") == 0) {
-            handle_list(client_socket);
-        } else if (strcmp(buffer, "READ") == 0) {
-            handle_read(client_socket);
-        } else if (strcmp(buffer, "DEL") == 0) {
-            handle_del(client_socket);
-        } else if (strcmp(buffer, "QUIT") == 0) {
+        // QUIT ist immer erlaubt (auch ohne Login)
+        if (strcmp(buffer, "QUIT") == 0) {
             printf("Client disconnected\n");
-            break; // Beende Schleife
+            break;
+        }
+        
+        // LOGIN ist immer erlaubt
+        if (strcmp(buffer, "LOGIN") == 0) {
+            handle_login(client_socket, &session, client_ip);
+            continue;
+        }
+        
+        // Alle anderen Commands benötigen Authentifizierung
+        if (!session.authenticated) {
+            printf("Command %s rejected: not authenticated\n", buffer);
+            write(client_socket, "ERR\n", 4);
+            continue;
+        }
+        
+        // Verarbeite Command (nur für authentifizierte User)
+        if (strcmp(buffer, "SEND") == 0) {
+            handle_send(client_socket, &session);
+        } else if (strcmp(buffer, "LIST") == 0) {
+            handle_list(client_socket, &session);
+        } else if (strcmp(buffer, "READ") == 0) {
+            handle_read(client_socket, &session);
+        } else if (strcmp(buffer, "DEL") == 0) {
+            handle_del(client_socket, &session);
         } else {
             write(client_socket, "ERR\n", 4); // Unbekannter Command
         }
@@ -410,6 +795,16 @@ int main(int argc, char *argv[]) {
             perror("Failed to create mail spool directory");
             return EXIT_FAILURE;
         }
+    }
+    
+    // Registriere Signal Handler für SIGCHLD um Zombie-Prozesse zu vermeiden
+    struct sigaction sa;
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+        perror("sigaction");
+        return EXIT_FAILURE;
     }
     
     // Erstelle Socket
@@ -447,10 +842,10 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
     
-    printf("TW-Mailer Server listening on port %d\n", port);
+    printf("TW-Mailer Server (concurrent) listening on port %d\n", port);
     printf("Mail spool directory: %s\n", mail_spool_dir);
     
-    // Iterativer Server: Accept und Handle Clients nacheinander
+    // Concurrent Server mit fork(): Handle Clients parallel
     while (1) {
         struct sockaddr_in client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
@@ -458,20 +853,53 @@ int main(int argc, char *argv[]) {
         // Accept Client-Verbindung
         int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
         if (client_socket == -1) {
+            // EINTR kann durch SIGCHLD verursacht werden - ignorieren
+            if (errno == EINTR) {
+                continue;
+            }
             perror("accept");
             continue; // Nächster Client
         }
         
+        // Extrahiere Client-IP für Blacklist
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+        
         printf("Client connected from %s:%d\n", 
-               inet_ntoa(client_addr.sin_addr), 
+               client_ip, 
                ntohs(client_addr.sin_port));
         
-        // Behandle Client-Anfragen
-        handle_client(client_socket);
+        // Fork einen Kindprozess für den Client
+        pid_t pid = fork();
         
-        // Schließe Client-Verbindung
-        close(client_socket);
-        printf("Client connection closed\n");
+        if (pid == -1) {
+            // Fork fehlgeschlagen
+            perror("fork");
+            close(client_socket);
+            continue;
+        } else if (pid == 0) {
+            // ========== KINDPROZESS ==========
+            // Kindprozess braucht den Server-Socket nicht
+            close(server_socket);
+            
+            // Behandle Client-Anfragen (mit Client-IP für Blacklist)
+            handle_client(client_socket, client_ip);
+            
+            // Schließe Client-Verbindung
+            close(client_socket);
+            printf("Child process %d: Client connection closed\n", getpid());
+            
+            // Kindprozess beenden
+            exit(EXIT_SUCCESS);
+        } else {
+            // ========== ELTERNPROZESS ==========
+            // Elternprozess braucht den Client-Socket nicht
+            // Der Kindprozess hat eine Kopie davon
+            close(client_socket);
+            
+            printf("Spawned child process %d for client\n", pid);
+            // Weiter mit accept() für nächsten Client
+        }
     }
     
     // Server-Socket schließen (wird nie erreicht)

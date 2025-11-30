@@ -1,0 +1,45 @@
+# Ignore compiled object files
+*.o
+*.obj
+*.lo
+*.la
+
+# Ignore executables and temporary binaries
+*.exe
+*.out
+*.app
+*.so
+*.a
+*.zip
+
+# Debug and symbol files
+*.dSYM/
+core
+
+# Editor/IDE files
+*~
+*.swp
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Build directories
+build/
+dist/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+Makefile.user
+
+# Keep archives in repo if explicitly added (do not ignore .zip)
