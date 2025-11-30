@@ -7,12 +7,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <termios.h>
 #include "common.h"
 #include "commands.h"
-#include "input.h"
 
 
 // Zeigt Menu an

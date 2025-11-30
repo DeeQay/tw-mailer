@@ -3,7 +3,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <termios.h>
-#include "common.h"
 
 // Return: 0 if success, -1 if input zu lange, -2 if error
 int read_input(char *buffer, int size) {
