@@ -1,6 +1,4 @@
 // Usage: ./twmailer-server <port> <mail-spool-directory>
-// Concurrent Server mit fork()
-// Pro Version: LOGIN mit LDAP, Session-Management, Blacklist
 
 #define _POSIX_C_SOURCE 200809L
 

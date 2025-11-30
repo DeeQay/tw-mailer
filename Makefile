@@ -8,8 +8,8 @@ LDFLAGS_SERVER = -lldap -llber
 LDFLAGS_CLIENT = 
 
 # Source files
-SERVER_SRC = twmailer-server.c
-CLIENT_SRC = twmailer-client.c
+SERVER_SRC = server/twmailer-server.c
+CLIENT_SRC = client/twmailer-client.c client/common.c client/input.c client/commands.c
 
 # Executable names
 SERVER_BIN = twmailer-server
