@@ -201,11 +201,6 @@ void save_blacklist_entry(const char *ip, int attempts, time_t block_until) {
     rename(temp_path, blacklist_path);
 }
 
-// Löscht Blacklist-Eintrag für eine IP (nach erfolgreichem Login)
-void clear_blacklist_entry(const char *ip) {
-    save_blacklist_entry(ip, 0, 0);
-}
-
 // Prüft ob IP aktuell gesperrt ist
 // Rückgabe: Verbleibende Sekunden wenn gesperrt, 0 wenn nicht gesperrt
 int get_blacklist_remaining(const char *ip) {
@@ -264,7 +259,7 @@ void register_successful_login(const char *ip) {
     int lock_fd = acquire_blacklist_lock();
     if (lock_fd == -1) return;
     
-    clear_blacklist_entry(ip);
+    save_blacklist_entry(ip, 0, 0); // Eintrag löschen
     release_blacklist_lock(lock_fd);
 }
 
@@ -286,7 +281,7 @@ int ldap_authenticate(const char *username, const char *password) {
         return -1;
     }
     
-    // Setze LDAP Version 3
+    // LDAP Version 3
     rc = ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &ldap_version);
     if (rc != LDAP_OPT_SUCCESS) {
         fprintf(stderr, "ldap_set_option failed: %s\n", ldap_err2string(rc));
@@ -294,7 +289,7 @@ int ldap_authenticate(const char *username, const char *password) {
         return -1;
     }
     
-    // Setze Netzwerk-Timeout (5 Sekunden) um bei fehlender VPN-Verbindung nicht ewig zu hängen
+    // Netzwerk-Timeout (5 Sekunden)
     struct timeval network_timeout;
     network_timeout.tv_sec = 5;
     network_timeout.tv_usec = 0;
@@ -305,8 +300,7 @@ int ldap_authenticate(const char *username, const char *password) {
         return -1;
     }
     
-    // Erstelle DN für Benutzer
-    // Format: uid=<username>,ou=people,dc=technikum-wien,dc=at
+    // Erstelle DN für Benutzer: uid=<username>,ou=people,dc=technikum-wien,dc=at
     char bind_dn[MAX_PATH];
     snprintf(bind_dn, sizeof(bind_dn), "uid=%s,ou=people,%s", username, LDAP_SEARCH_BASE);
     
@@ -319,7 +313,7 @@ int ldap_authenticate(const char *username, const char *password) {
     rc = ldap_sasl_bind_s(ld, bind_dn, LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL);
     
     if (rc == LDAP_SUCCESS) {
-        result = 1; // Authentifizierung erfolgreich
+        result = 1;
         printf("LDAP authentication successful for user: %s\n", username);
     } else if (rc == LDAP_SERVER_DOWN || rc == LDAP_TIMEOUT || rc == LDAP_CONNECT_ERROR) {
         fprintf(stderr, "LDAP server unreachable: %s\n", ldap_err2string(rc));
@@ -332,7 +326,6 @@ int ldap_authenticate(const char *username, const char *password) {
     
     // Schließe LDAP-Verbindung
     ldap_unbind_ext_s(ld, NULL, NULL);
-    
     return result;
 }
 
@@ -406,20 +399,16 @@ int get_next_message_number(const char *username) {
     char msg_file[MAX_PATH];
     int num = 1;
     
-    // Suche erste freie Nummer durch Probieren
+    // Suche erste freie Nummer
     while (num < 1000) {
         snprintf(msg_file, sizeof(msg_file), "%s/%s/%d", mail_spool_dir, username, num);
-        
-        // Prüfe ob Datei existiert
-        FILE *fp = fopen(msg_file, "r");
-        if (fp == NULL) {
-            return num; // Diese Nummer ist frei
+        if (access(msg_file, F_OK) == -1) {
+            return num; // Nummer ist frei
         }
-        fclose(fp);
         num++;
     }
     
-    return num; // Fallback
+    return num;
 }
 
 // Behandelt SEND-Command (Pro Version: Sender kommt aus Session)

@@ -47,7 +47,7 @@ int readline(int fd, char *buffer, int max_len) {
         }
     }
     
-    buffer[i] = '\0'; 
+    buffer[i] = '\0';
     return i;
 }
 
@@ -385,7 +385,6 @@ void read_message(int socket_fd) {
                 lines_read++;
             }
         }
-        
         printf("--- End of Message ---\n");
     } else {
         printf("Error: Message not found or invalid request\n");
