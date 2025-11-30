@@ -55,12 +55,12 @@ int main(int argc, char *argv[]) {
     
     // Verbinde mit Server
     struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
+    memset(&server_addr, 0, sizeof(server_addr));// memset- Füllt einen Speicherbereich byteweise mit einem Wert
     server_addr.sin_family = AF_INET; // IPv4
     server_addr.sin_port = htons(server_port); // Portnummer konvertieren zu Netzwerk-Byte-Reihenfolge
     
     // Konvertiere IP-Adresse
-    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) { // konvertiert die ip von Text- zu Binärform
         perror("inet_pton");
         close(socket_fd);
         return EXIT_FAILURE;
@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
             break;
         }
         
-        int option = atoi(choice);
+        int option = atoi(choice); // atoi konvertiert String zu Integer
         
         // Verarbeite gewählte Option
         switch (option) {

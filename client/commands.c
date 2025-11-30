@@ -13,7 +13,7 @@ void login(int socket_fd) {
     char password[MAX_PASSWORD + 1];
     char response[32];
     
-    printf("\n=== LOGIN ===\n");
+    printf("\n LOGIN \n");
     
     if (is_logged_in) {
         printf("Already logged in!\n");
@@ -85,7 +85,7 @@ void send_message(int socket_fd) {
     char buffer[BUFFER_SIZE];
     char message[MAX_MESSAGE_SIZE];
 
-    printf("\n=== SEND MESSAGE ===\n");
+    printf("\n SEND MESSAGE \n");
     
     if (!is_logged_in) {
         printf("Error: You must login first!\n");
@@ -141,7 +141,7 @@ void send_message(int socket_fd) {
                 break;
             }
             
-            if (strcmp(buffer, ".\n") == 0) {
+            if (strcmp(buffer, ".\n") == 0) { 
                 break;
             }
             
@@ -193,7 +193,7 @@ void send_message(int socket_fd) {
 void list_messages(int socket_fd) {
     char buffer[BUFFER_SIZE];
     
-    printf("\n=== LIST MESSAGES ===\n");
+    printf("\n LIST MESSAGES \n");
     
     if (!is_logged_in) {
         printf("Error: You must login first!\n");
@@ -224,12 +224,12 @@ void list_messages(int socket_fd) {
     }
 }
 
-// Sendet READ-Command an Server (Pro Version: Username aus Session)
+// Sendet READ-Command an Server, username aus Session
 void read_message(int socket_fd) {
     char msg_num_str[16];
     char buffer[BUFFER_SIZE];
     
-    printf("\n=== READ MESSAGE ===\n");
+    printf("\n READ MESSAGE \n");
     
     if (!is_logged_in) {
         printf("Error: You must login first!\n");
@@ -272,14 +272,19 @@ void read_message(int socket_fd) {
             FD_SET(socket_fd, &readfds);
             FD_SET(STDIN_FILENO, &readfds);
 
-            if (select(socket_fd + 1, &readfds, NULL, NULL, NULL) < 0) {
+            // Warte auf Daten vom Socket oder Tastatureingabe
+            if (select(socket_fd + 1, &readfds, NULL, NULL, NULL) < 0) { 
                 break;
             }
 
+            // Überprüfe, ob Tastatureingabe vorliegt
             if (FD_ISSET(STDIN_FILENO, &readfds)) {
+                int c;
+                while ((c = getchar()) != '\n' && c != EOF); // Eingabepuffer leeren
                 break;
             }
 
+            // Überprüfe, ob Daten vom Socket vorliegen
             if (FD_ISSET(socket_fd, &readfds)) {
                 if (readline(socket_fd, buffer, sizeof(buffer)) <= 0) {
                     break;
@@ -294,12 +299,12 @@ void read_message(int socket_fd) {
     }
 }
 
-// Sendet DEL-Command an Server (Pro Version: Username aus Session)
+// Sendet DEL-Command an Server
 void delete_message(int socket_fd) {
     char msg_num_str[16];
     char buffer[BUFFER_SIZE];
     
-    printf("\n=== DELETE MESSAGE ===\n");
+    printf("\n DELETE MESSAGE \n");
     
     if (!is_logged_in) {
         printf("Error: You must login first!\n");
@@ -314,7 +319,7 @@ void delete_message(int socket_fd) {
     }
     msg_num_str[strcspn(msg_num_str, "\n")] = 0;
     
-    // Sende DEL-Command (Username kommt aus Session am Server)
+    // Sende DEL-Command 
     write(socket_fd, "DEL\n", 4);
     
     // Sende Message-Nummer

@@ -16,7 +16,7 @@ int readline(int fd, char *buffer, int max_len) {
         if (n == 1) {
             buffer[i++] = c;
             if (c == '\n') {
-                break; // Newline gefunden
+                break; // Newline gefunden, fertig
             }
         } else if (n == 0) {
             if (i == 0) {
@@ -28,6 +28,6 @@ int readline(int fd, char *buffer, int max_len) {
         }
     }
     
-    buffer[i] = '\0';
+    buffer[i] = '\0'; // Null-Terminierung
     return i;
 }
