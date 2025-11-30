@@ -8,7 +8,7 @@ LDFLAGS_SERVER = -lldap -llber
 LDFLAGS_CLIENT = 
 
 # Source files
-SERVER_SRC = server/twmailer-server.c
+SERVER_SRC = server/twmailer-server.c server/common.c server/blacklist.c server/auth.c server/mailbox.c server/commands.c
 CLIENT_SRC = client/twmailer-client.c client/common.c client/input.c client/commands.c
 
 # Executable names
