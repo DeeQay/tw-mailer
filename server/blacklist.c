@@ -7,7 +7,6 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-// Blacklist-Funktionen hierher verschieben
 // Erwirbt ein Lock auf die Blacklist-Datei
 int acquire_blacklist_lock() {
     char lock_file[MAX_PATH];
