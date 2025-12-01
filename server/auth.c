@@ -10,7 +10,7 @@
 int ldap_authenticate(const char *username, const char *password) {
     LDAP *ld = NULL;
     int result = 0;
-    int ldap_version = LDAP_VERSION3;
+    int ldap_version3 = LDAP_VERSION3;
     
     // Erstelle LDAP URI
     char ldap_uri[256];
@@ -24,7 +24,7 @@ int ldap_authenticate(const char *username, const char *password) {
     }
     
     // LDAP Version 3
-    rc = ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &ldap_version);
+    rc = ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &ldap_version3);
     if (rc != LDAP_OPT_SUCCESS) {
         fprintf(stderr, "ldap_set_option failed: %s\n", ldap_err2string(rc));
         ldap_unbind_ext_s(ld, NULL, NULL);
@@ -47,12 +47,12 @@ int ldap_authenticate(const char *username, const char *password) {
     snprintf(bind_dn, sizeof(bind_dn), "uid=%s,ou=people,%s", username, LDAP_SEARCH_BASE);
     
     // Erstelle Credentials
-    struct berval cred;
-    cred.bv_val = (char *)password;
+    struct berval cred; 
+    cred.bv_val = (char *)password; 
     cred.bv_len = strlen(password);
     
     // Versuche LDAP bind (Authentifizierung)
-    rc = ldap_sasl_bind_s(ld, bind_dn, LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL);
+    rc = ldap_sasl_bind_s(ld, bind_dn, LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL); 
     
     if (rc == LDAP_SUCCESS) {
         result = 1;

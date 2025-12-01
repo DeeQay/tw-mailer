@@ -260,7 +260,6 @@ int main(int argc, char *argv[]) {
         } else {
             // PARENT PROCESS
             // braucht den Client-Socket nicht
-            // Der Kindprozess hat eine Kopie davon
             close(client_socket);
             
             printf("Spawned child process %d for client\n", pid);
